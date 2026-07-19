@@ -1,0 +1,35 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "core/**"
+      - "mods/**"
+      - "build.js"
+      - "package.json"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build dist/blackettweaks.js
+        run: node build.js
+
+      - name: Commit built script
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dist/blackettweaks.js
+          git diff --cached --quiet || git commit -m "Build dist/blackettweaks.js"
+          git push
