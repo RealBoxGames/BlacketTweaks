@@ -12,15 +12,6 @@ A userscript that adds quality-of-life features to Blacket.
 
 All features are **off by default**. Enable the ones you want from the new **BlacketTweaks** card on the `/settings` page.
 
-## Features
-
-Toggle any of these on/off from the Settings page. Some have a gear icon for extra configuration.
-
-- **Profile Blooks** *(Stats)* — Adds a "Blooks" card under a profile's Friends list, showing that user's collection grouped by pack/set, with owned vs. locked blooks and quantities. Configurable: show blook names under icons, show/hide the search bar.
-- **Copy User ID** *(Stats)* — Adds a "Copy User ID" button next to a profile's stats button for quickly grabbing a user's ID.
-- **Join Date on Stats** *(Stats)* — Adds a "Join Date" tile to the Stats card showing when the account was created. Configurable date format (short / numeric / long).
-- **Extra Stats** *(Stats)* — Adds User ID, Online Status, and Name Color tiles to the Stats card.
-- **Double Leaderboard** *(Leaderboard)* — Shows the Tokens and EXP leaderboards side by side instead of needing to switch tabs.
 
 ## Contributing / feedback
 
