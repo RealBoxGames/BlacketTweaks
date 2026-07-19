@@ -187,11 +187,11 @@
                                 const style = document.createElement("style");
                                 style.id = "bp-rainbow-style";
                                 style.textContent = `
-                                    @keyframes bpRainbowShift { 0% { background-position: 0% 50%; } 100% { background-position: 200% 50%; } }
+                                    @keyframes bpRainbowShift { 0% { background-position: 0% 50%; } 100% { background-position: 400% 50%; } }
                                     .bp-rainbow {
-                                        background: linear-gradient(90deg, #ff3b3b, #ff9800, #ff3b3b) !important;
-                                        background-size: 200% 200% !important;
-                                        animation: bpRainbowShift 4s linear infinite !important;
+                                        background: linear-gradient(90deg, #ff3b3b, #ff9800, #ffe234, #4cd964, #0bc2cf, #5c7cff, #b25cff, #ff3b3b) !important;
+                                        background-size: 400% 400% !important;
+                                        animation: bpRainbowShift 6s linear infinite !important;
                                     }
                                 `;
                                 document.head.appendChild(style);
@@ -1152,6 +1152,254 @@
                                 BlacketTweaks.log("Double Leaderboard feature loaded.");
                             })();
 
+                            (function CleanerChatUIFeature() {
+                                const FEATURE_KEY = "cleanerChatUI";
+                                if (!BlacketTweaks.registerFeature(FEATURE_KEY, "Cleaner Chat UI", "Rounds and cleans up the chat input bar, buttons, and emoji picker.", "Chat", "fa-comment-alt")) return;
+
+                                function injectStyles() {
+                                    if (document.getElementById("bp-cleaner-chat-style")) return;
+                                    const style = document.createElement("style");
+                                    style.id = "bp-cleaner-chat-style";
+                                    style.textContent = `
+                                        .styles__chatInputContainer___gkR4A-camelCase {
+                                            border-radius: 1vw !important;
+                                            overflow: hidden !important;
+                                            margin: 0 0.5vw 0.5vw 0.5vw !important;
+                                            width: calc(100% - 1vw) !important;
+                                            box-sizing: border-box !important;
+                                            border: 0.156vw solid rgba(0,0,0,0.35) !important;
+                                            align-items: center !important;
+                                            padding: 0.15vw !important;
+                                        }
+                                        .styles__chatInputBox___fvMA4-camelCase,
+                                        .styles__chatEditBox___29QAm-camelCase {
+                                            border-radius: 0.9vw !important;
+                                            padding: 0 0.5vw !important;
+                                        }
+                                        .styles__chatEmojiButton___8RFa2-camelCase,
+                                        .styles__chatUploadButton___g39Ac-camelCase {
+                                            border-radius: 0.8vw !important;
+                                            margin: 0 0.15vw !important;
+                                            transition: 0.15s;
+                                        }
+                                        .styles__chatEmojiButton___8RFa2-camelCase:hover,
+                                        .styles__chatUploadButton___g39Ac-camelCase:hover {
+                                            transform: scale(0.92);
+                                        }
+                                        .styles__chatEmojiPickerContainer___KR4aN-camelCase {
+                                            border-radius: 1vw !important;
+                                            overflow: hidden !important;
+                                            right: 0.5vw !important;
+                                            bottom: 3.4vw !important;
+                                        }
+                                        .styles__chatEmojiPickerHeader___FK4Ac-camelCase {
+                                            border-radius: 1vw 1vw 0 0 !important;
+                                        }
+                                    `;
+                                    document.head.appendChild(style);
+                                }
+
+                                injectStyles();
+                                BlacketTweaks.log("Cleaner Chat UI feature loaded.");
+                            })();
+
+                            (function DiscordTypeChatFeature() {
+                                const FEATURE_KEY = "discordTypeChat";
+                                if (!BlacketTweaks.registerFeature(FEATURE_KEY, "Discord Type Chat", "Adds a Discord-style jump-to-bottom button that appears when you scroll up in chat, with an unread count.", "Chat", "fa-arrow-down")) return;
+
+                                const CONFIG = {
+                                    containerSelector: "#chatContainer",
+                                    threshold: 80
+                                };
+
+                                function injectStyles() {
+                                    if (document.getElementById("bp-smart-scroll-style")) return;
+                                    const style = document.createElement("style");
+                                    style.id = "bp-smart-scroll-style";
+                                    style.textContent = `
+                                        #bpJumpBtn {
+                                            position: absolute;
+                                            bottom: 4.2vw;
+                                            left: 50%;
+                                            transform: translateX(-50%) translateY(0.8vw);
+                                            background: #2f2f2f;
+                                            color: #fff;
+                                            font-family: Quicksand, sans-serif;
+                                            font-weight: 700;
+                                            font-size: 0.85vw;
+                                            padding: 0.35vw 0.9vw 0.5vw;
+                                            border-radius: 1vw;
+                                            box-shadow: inset 0 -0.2vw rgba(0,0,0,0.25), 0 0 0.3vw rgba(0,0,0,0.4);
+                                            cursor: pointer;
+                                            user-select: none;
+                                            z-index: 20;
+                                            opacity: 0;
+                                            pointer-events: none;
+                                            transition: opacity .18s, transform .18s;
+                                            display: flex;
+                                            align-items: center;
+                                            gap: 0.4vw;
+                                        }
+                                        #bpJumpBtn.bpShow { opacity: 1; pointer-events: auto; transform: translateX(-50%) translateY(0); }
+                                        #bpJumpBtn:hover { background: #3f3f3f; }
+                                        #bpJumpCount { background: #ff4e4e; border-radius: 1vw; padding: 0 0.4vw; font-size: 0.7vw; }
+                                    `;
+                                    document.head.appendChild(style);
+                                }
+
+                                function setup(cont) {
+                                    if (cont.dataset.bpSmartScrollSetup) return;
+                                    cont.dataset.bpSmartScrollSetup = "true";
+
+                                    injectStyles();
+
+                                    const THRESHOLD = CONFIG.threshold;
+                                    let pinned = true, missed = 0, userScrolling = false, holdTop = 0;
+
+                                    const host = cont.parentElement || document.body;
+                                    if (getComputedStyle(host).position === "static") host.style.position = "relative";
+
+                                    const btn = document.createElement("div");
+                                    btn.id = "bpJumpBtn";
+                                    btn.innerHTML = `<i class="fas fa-arrow-down"></i><span>Jump to bottom</span><span id="bpJumpCount" style="display:none">0</span>`;
+                                    host.appendChild(btn);
+
+                                    const atBottom = () => cont.scrollHeight - cont.scrollTop - cont.clientHeight < THRESHOLD;
+
+                                    const render = () => {
+                                        btn.classList.toggle("bpShow", !pinned);
+                                        const c = btn.querySelector("#bpJumpCount");
+                                        if (missed > 0) { c.style.display = ""; c.textContent = missed > 99 ? "99+" : missed; }
+                                        else c.style.display = "none";
+                                    };
+
+                                    const goBottom = (smooth) => {
+                                        pinned = true; missed = 0;
+                                        cont.scrollTo({ top: cont.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+                                        render();
+                                    };
+
+                                    btn.addEventListener("click", () => goBottom(true));
+
+                                    ["wheel", "touchmove", "keydown"].forEach((evt) =>
+                                        cont.addEventListener(evt, () => {
+                                            userScrolling = true;
+                                            setTimeout(() => { userScrolling = false; }, 150);
+                                        }, { passive: true })
+                                    );
+
+                                    cont.addEventListener("scroll", () => {
+                                        if (userScrolling) {
+                                            const wasPinned = pinned;
+                                            pinned = atBottom();
+                                            if (pinned && !wasPinned) missed = 0;
+                                            if (!pinned) holdTop = cont.scrollTop;
+                                            render();
+                                        } else if (!pinned && Math.abs(cont.scrollTop - holdTop) > 4) {
+                                            cont.scrollTop = holdTop;
+                                        }
+                                    });
+
+                                    new MutationObserver((muts) => {
+                                        let added = 0;
+                                        muts.forEach((m) => { added += m.addedNodes.length; });
+                                        if (!added) return;
+                                        if (pinned) cont.scrollTop = cont.scrollHeight;
+                                        else { missed += added; render(); }
+                                    }).observe(cont, { childList: true });
+
+                                    render();
+                                }
+
+                                BlacketTweaks.util.onExists(CONFIG.containerSelector, setup);
+                                BlacketTweaks.log("Discord Type Chat feature loaded.");
+                            })();
+
+                            (function ChatTimestampsFeature() {
+                                const FEATURE_KEY = "chatTimestamps";
+                                if (!BlacketTweaks.registerFeature(FEATURE_KEY, "Chat Timestamps", "Shows a relative timestamp on hover for each chat message.", "Chat", "fa-clock")) return;
+
+                                const CONFIG = {
+                                    containerSelector: "#chatContainer",
+                                    messageClass: "styles__chatMessage___2Z1ZU-camelCase"
+                                };
+
+                                function injectStyles() {
+                                    if (document.getElementById("bp-chat-stamps-style")) return;
+                                    const style = document.createElement("style");
+                                    style.id = "bp-chat-stamps-style";
+                                    style.textContent = `
+                                        .${CONFIG.messageClass} { position: relative; }
+                                        .bpStamp {
+                                            position: absolute;
+                                            right: 0.6vw;
+                                            top: 50%;
+                                            transform: translateY(-50%);
+                                            font-family: Quicksand, sans-serif;
+                                            font-size: 0.62vw;
+                                            font-weight: 600;
+                                            color: rgba(255,255,255,0.5);
+                                            background: rgba(0,0,0,0.35);
+                                            padding: 0.05vw 0.35vw;
+                                            border-radius: 0.6vw;
+                                            white-space: nowrap;
+                                            pointer-events: none;
+                                            user-select: none;
+                                            opacity: 0;
+                                            transition: opacity .12s;
+                                            -webkit-text-fill-color: rgba(255,255,255,0.5);
+                                        }
+                                        .${CONFIG.messageClass}:hover > .bpStamp { opacity: 1; }
+                                    `;
+                                    document.head.appendChild(style);
+                                }
+
+                                const times = new Map();
+
+                                function fmt(d) {
+                                    const s = (Date.now() - d) / 1000;
+                                    const t = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+                                    if (s < 60) return "just now";
+                                    if (s < 3600) return Math.floor(s / 60) + "m · " + t;
+                                    if (s < 86400) return Math.floor(s / 3600) + "h · " + t;
+                                    return d.toLocaleDateString([], { month: "short", day: "numeric" }) + " · " + t;
+                                }
+
+                                function tag(el, date) {
+                                    if (el.querySelector(":scope > .bpStamp")) return;
+                                    const s = document.createElement("text");
+                                    s.className = "bpStamp";
+                                    s.textContent = date ? fmt(date) : "older";
+                                    el.appendChild(s);
+                                    if (date) times.set(s, date);
+                                }
+
+                                function setup(cont) {
+                                    if (cont.dataset.bpStampsSetup) return;
+                                    cont.dataset.bpStampsSetup = "true";
+
+                                    injectStyles();
+
+                                    cont.querySelectorAll(`.${CONFIG.messageClass}`).forEach((el) => tag(el, null));
+
+                                    new MutationObserver((muts) =>
+                                        muts.forEach((mu) => mu.addedNodes.forEach((n) => {
+                                            if (n.nodeType !== 1) return;
+                                            const now = new Date();
+                                            if (n.matches && n.matches(`.${CONFIG.messageClass}`)) tag(n, now);
+                                            n.querySelectorAll && n.querySelectorAll(`.${CONFIG.messageClass}`).forEach((e) => tag(e, now));
+                                        }))
+                                    ).observe(cont, { childList: true, subtree: true });
+
+                                    setInterval(() => {
+                                        times.forEach((d, s) => { s.isConnected ? (s.textContent = fmt(d)) : times.delete(s); });
+                                    }, 30000);
+                                }
+
+                                BlacketTweaks.util.onExists(CONFIG.containerSelector, setup);
+                                BlacketTweaks.log("Chat Timestamps feature loaded.");
+                            })();
+
                             (function BlacketTweaksSettingsFeature() {
                                 const CONFIG = {
                                     gridSelector: ".styles__mainContainer___4TLvi-camelCase"
@@ -1172,6 +1420,16 @@
                                             gap: 0.35vw;
                                             margin-top: 0.5vw;
                                         }
+                                        .bp-tweakCategory {
+                                            font-size: 0.72vw;
+                                            font-family: Quicksand, sans-serif;
+                                            font-weight: 700;
+                                            text-transform: uppercase;
+                                            letter-spacing: 0.05vw;
+                                            color: rgba(255,255,255,0.45);
+                                            margin: 0.6vw 0 0.1vw;
+                                        }
+                                        .bp-tweakCategory:first-child { margin-top: 0; }
                                         .bp-tweakRow {
                                             display: flex;
                                             align-items: center;
@@ -1272,9 +1530,24 @@
                                         <div class="bp-tweaksList"></div>
                                     `;
                                     const list = card.querySelector(".bp-tweaksList");
-                                    Object.entries(BlacketTweaks.features)
-                                        .sort(([, a], [, b]) => a.label.localeCompare(b.label))
-                                        .forEach(([key, feature]) => list.appendChild(buildToggleRow(key, feature)));
+
+                                    const byCategory = {};
+                                    Object.entries(BlacketTweaks.features).forEach(([key, feature]) => {
+                                        if (!byCategory[feature.category]) byCategory[feature.category] = [];
+                                        byCategory[feature.category].push([key, feature]);
+                                    });
+
+                                    Object.keys(byCategory).sort().forEach((category) => {
+                                        const header = document.createElement("div");
+                                        header.className = "bp-tweakCategory";
+                                        header.textContent = category;
+                                        list.appendChild(header);
+
+                                        byCategory[category]
+                                            .sort(([, a], [, b]) => a.label.localeCompare(b.label))
+                                            .forEach(([key, feature]) => list.appendChild(buildToggleRow(key, feature)));
+                                    });
+
                                     return card;
                                 }
 
