@@ -1,0 +1,1297 @@
+// ==UserScript==
+// @name         BlacketTweaks
+// @namespace    blackettweaks
+// @version      0.1.0
+// @description  Adds quality-of-life features to Blacket (private server friendly).
+// @match        *://*/*
+// @run-at       document-idle
+// @grant        none
+// ==/UserScript==
+
+                        (function () {
+                            "use strict";
+
+                            const BlacketTweaks = window.BlacketTweaks = window.BlacketTweaks || {
+                                version: "1.0.0",
+                                features: {},
+                                log: (...args) => console.log("%c[BlacketTweaks]", "color:#8a5cff;font-weight:bold;", ...args),
+                                warn: (...args) => console.warn("%c[BlacketTweaks]", "color:#ff9800;font-weight:bold;", ...args)
+                            };
+
+                            function waitFor(check, { interval = 100, timeout = 15000 } = {}) {
+                                return new Promise((resolve, reject) => {
+                                    const start = Date.now();
+                                    const tick = () => {
+                                        let result;
+                                        try { result = check(); } catch (e) { result = undefined; }
+                                        if (result) return resolve(result);
+                                        if (Date.now() - start > timeout) return reject(new Error("waitFor timed out"));
+                                        setTimeout(tick, interval);
+                                    };
+                                    tick();
+                                });
+                            }
+
+                            function onExists(selector, fn, root = document.body) {
+                                const seen = new WeakSet();
+                                const tryRun = (el) => {
+                                    if (seen.has(el)) return;
+                                    seen.add(el);
+                                    try { fn(el); } catch (e) { BlacketTweaks.warn(`onExists handler failed for "${selector}"`, e); }
+                                };
+                                document.querySelectorAll(selector).forEach(tryRun);
+                                const observer = new MutationObserver(() => {
+                                    document.querySelectorAll(selector).forEach(tryRun);
+                                });
+                                observer.observe(root, { childList: true, subtree: true });
+                                return observer;
+                            }
+
+                            let locationChangeListeners = null;
+                            function onLocationChange(callback) {
+                                if (!locationChangeListeners) {
+                                    locationChangeListeners = [];
+                                    let lastHref = location.href;
+                                    const check = () => {
+                                        if (location.href === lastHref) return;
+                                        lastHref = location.href;
+                                        locationChangeListeners.forEach((cb) => {
+                                            try { cb(); } catch (e) { BlacketTweaks.warn("onLocationChange listener failed", e); }
+                                        });
+                                    };
+                                    ["pushState", "replaceState"].forEach((method) => {
+                                        const original = history[method];
+                                        history[method] = function (...args) {
+                                            const result = original.apply(this, args);
+                                            check();
+                                            return result;
+                                        };
+                                    });
+                                    window.addEventListener("popstate", check);
+
+                                    setInterval(check, 500);
+                                }
+                                locationChangeListeners.push(callback);
+                            }
+
+                            let viewedUser = null;
+                            let viewedUserListeners = [];
+                            function onViewedUserChange(callback) {
+                                viewedUserListeners.push(callback);
+                                if (viewedUser) callback(viewedUser);
+                            }
+                            function wrapSetUser(fn) {
+                                return function (user) {
+                                    viewedUser = user;
+                                    const result = fn.apply(this, arguments);
+                                    viewedUserListeners.forEach((cb) => {
+                                        try { cb(user); } catch (e) { BlacketTweaks.warn("onViewedUserChange listener failed", e); }
+                                    });
+                                    return result;
+                                };
+                            }
+
+                            function installSetUserHook() {
+                                if (!window.blacket) return false;
+                                let internal = window.blacket.setUser;
+                                if (typeof internal === "function") internal = wrapSetUser(internal);
+                                Object.defineProperty(window.blacket, "setUser", {
+                                    configurable: true,
+                                    get() { return internal; },
+                                    set(fn) { internal = wrapSetUser(fn); }
+                                });
+                                return true;
+                            }
+
+                            if (!installSetUserHook()) {
+                                waitFor(() => window.blacket).then(() => installSetUserHook()).catch(() => {
+                                    BlacketTweaks.warn("window.blacket never appeared — profile-aware features will fall back to URL/DOM guessing.");
+                                });
+                            }
+
+                            function openModal(bodyHtml) {
+                                const modal = document.createElement("div");
+                                modal.className = "arts__modal___VpEAD-camelCase";
+                                modal.innerHTML = `<form class="styles__container___1BPm9-camelCase">${bodyHtml}<input type="submit" style="opacity: 0; display: none;" /></form>`;
+                                document.body.appendChild(modal);
+                                modal.addEventListener("click", (e) => { if (e.target === modal) modal.remove(); });
+                                modal.querySelector("form").addEventListener("submit", (e) => e.preventDefault());
+                                return modal;
+                            }
+
+                            function siteButtonHtml(id, text, color = "var(--accent)") {
+                                return `
+                                    <div id="${id}" class="styles__button___1_E-G-camelCase styles__button___3zpwV-camelCase" role="button" tabindex="0">
+                                        <div class="styles__shadow___3GMdH-camelCase"></div>
+                                        <div class="styles__edge___3eWfq-camelCase" style="background-color: ${color};"></div>
+                                        <div class="styles__front___vcvuy-camelCase styles__buttonInside___39vdp-camelCase" style="background-color: ${color};">${text}</div>
+                                    </div>
+                                `;
+                            }
+
+                            BlacketTweaks.util = {
+                                waitFor,
+                                onExists,
+                                onLocationChange,
+                                onViewedUserChange,
+                                getViewedUser: () => viewedUser,
+                                openModal,
+                                siteButtonHtml
+                            };
+
+                            const SETTINGS_STORAGE_KEY = "blackettweaks_settings";
+                            let settingsCache = null;
+                            function loadSettings() {
+                                if (settingsCache) return settingsCache;
+                                try {
+                                    settingsCache = JSON.parse(localStorage.getItem(SETTINGS_STORAGE_KEY)) || {};
+                                } catch (e) {
+                                    settingsCache = {};
+                                }
+                                return settingsCache;
+                            }
+
+                            BlacketTweaks.settings = {
+
+                                isEnabled(key) {
+                                    const s = loadSettings();
+                                    return s[key] === true;
+                                },
+                                setEnabled(key, enabled) {
+                                    const s = loadSettings();
+                                    s[key] = enabled;
+                                    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(s));
+                                },
+
+                                getConfig(featureKey, configKey, defaultValue) {
+                                    const s = loadSettings();
+                                    const cfg = (s.config && s.config[featureKey]) || {};
+                                    return cfg[configKey] !== undefined ? cfg[configKey] : defaultValue;
+                                },
+                                setConfig(featureKey, configKey, value) {
+                                    const s = loadSettings();
+                                    if (!s.config) s.config = {};
+                                    if (!s.config[featureKey]) s.config[featureKey] = {};
+                                    s.config[featureKey][configKey] = value;
+                                    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(s));
+                                }
+                            };
+
+                            BlacketTweaks.registerFeature = (key, label, description, category = "General", icon = "fa-puzzle-piece", onConfigure = null) => {
+                                BlacketTweaks.features[key] = { key, label, description, category, icon, onConfigure };
+                                return BlacketTweaks.settings.isEnabled(key);
+                            };
+
+                            BlacketTweaks.util.injectRainbowStyle = function () {
+                                if (document.getElementById("bp-rainbow-style")) return;
+                                const style = document.createElement("style");
+                                style.id = "bp-rainbow-style";
+                                style.textContent = `
+                                    @keyframes bpRainbowShift { 0% { background-position: 0% 50%; } 100% { background-position: 200% 50%; } }
+                                    .bp-rainbow {
+                                        background: linear-gradient(90deg, #ff3b3b, #ff9800, #ff3b3b) !important;
+                                        background-size: 200% 200% !important;
+                                        animation: bpRainbowShift 4s linear infinite !important;
+                                    }
+                                `;
+                                document.head.appendChild(style);
+                            };
+                            BlacketTweaks.util.injectRainbowStyle();
+
+                            (function ProfileBlooksFeature() {
+                                const FEATURE_KEY = "profileBlooks";
+
+                                function openConfigure() {
+                                    const showNames = BlacketTweaks.settings.getConfig(FEATURE_KEY, "showNames", false);
+                                    const showSearch = BlacketTweaks.settings.getConfig(FEATURE_KEY, "showSearch", true);
+
+                                    const toggleRowHtml = (id, label, desc, on) => `
+                                        <div class="bp-tweakRow" style="margin: 0.5vw 0;">
+                                            <div class="bp-tweakSwitch${on ? " bp-tweakSwitchOn" : ""}" id="${id}" role="button" tabindex="0"><div class="bp-tweakSwitchSquare"></div></div>
+                                            <div class="bp-tweakInfo">
+                                                <div class="bp-tweakLabel" style="white-space: normal;">${label}</div>
+                                                <div class="bp-tweakDesc" style="white-space: normal;">${desc}</div>
+                                            </div>
+                                        </div>
+                                    `;
+
+                                    const modal = BlacketTweaks.util.openModal(`
+                                        <div class="styles__text___KSL4--camelCase"><div>Profile Blooks Settings</div></div>
+                                        <div class="styles__holder___3CEfN-camelCase" style="min-width: 22vw; box-sizing: border-box;">
+                                            ${toggleRowHtml("bpCfgShowNames", "Show blook names", "Displays each blook's name under its icon.", showNames)}
+                                            ${toggleRowHtml("bpCfgShowSearch", "Show search bar", "Shows the search box above the blooks list.", showSearch)}
+                                            <div class="styles__buttonContainer___2EaVD-camelCase">${BlacketTweaks.util.siteButtonHtml("bpBlooksCfgDone", "Done")}</div>
+                                        </div>
+                                    `);
+
+                                    const bindToggle = (id, key) => {
+                                        const el = modal.querySelector(`#${id}`);
+                                        el.addEventListener("click", () => {
+                                            const now = !el.classList.contains("bp-tweakSwitchOn");
+                                            el.classList.toggle("bp-tweakSwitchOn", now);
+                                            BlacketTweaks.settings.setConfig(FEATURE_KEY, key, now);
+                                        });
+                                    };
+                                    bindToggle("bpCfgShowNames", "showNames");
+                                    bindToggle("bpCfgShowSearch", "showSearch");
+                                    modal.querySelector("#bpBlooksCfgDone").addEventListener("click", () => modal.remove());
+                                }
+
+                                if (!BlacketTweaks.registerFeature(FEATURE_KEY, "Profile Blooks", "Shows a Blooks collection card under a profile's Friends list.", "Stats", "fa-box-open", openConfigure)) return;
+
+                                const CONFIG = {
+
+                                    friendsCardSelector: ".styles__statsContainer___QnrRB-camelCase",
+                                    friendsContainerSelector: ".styles__friendsContainer___kRk3a-camelCase",
+                                    headerNameSelector: ".styles__headerName___1GBcl-camelCase",
+                                    userIdSelector: "#userId",
+                                    containerHeaderSelector: ".styles__containerHeader___3xghM-camelCase",
+                                    containerHeaderInsideClass: "styles__containerHeaderInside___2omQm-camelCase",
+                                    topStatsClass: "styles__topStats___3qffP-camelCase",
+
+                                    userEndpoints: [
+                                        "/worker2/user/{identifier}",
+                                        "/worker2/stats?name={identifier}",
+                                        "/worker2/profile/{identifier}",
+                                        "/worker2/user/{identifier}/blooks"
+                                    ],
+
+                                    inventoryPaths: [
+                                        "user.blooks",
+                                        "user.inventory.blooks",
+                                        "user.inventory",
+                                        "blooks",
+                                        "inventory"
+                                    ]
+                                };
+
+                                function getByPath(obj, path) {
+                                    return path.split(".").reduce((acc, key) => (acc && typeof acc === "object") ? acc[key] : undefined, obj);
+                                }
+
+                                function normalizeInventory(raw) {
+                                    if (!raw) return [];
+                                    if (Array.isArray(raw)) {
+                                        return raw.map((entry) => {
+                                            if (typeof entry === "string") return { key: entry, quantity: 1 };
+                                            const key = entry.name ?? entry.id ?? entry.blook ?? entry.key;
+                                            const quantity = entry.quantity ?? entry.count ?? entry.amount ?? 1;
+                                            return key != null ? { key, quantity } : null;
+                                        }).filter(Boolean);
+                                    }
+                                    if (typeof raw === "object") {
+                                        return Object.entries(raw)
+                                            .map(([key, value]) => ({ key, quantity: typeof value === "number" ? value : (value?.quantity ?? value?.count ?? value?.amount ?? 1) }))
+                                            .filter((e) => e.quantity > 0);
+                                    }
+                                    return [];
+                                }
+
+                                function getBlookTable() {
+                                    const b = window.blacket;
+                                    if (!b) return {};
+                                    return b.blooks || b.blookList || b.blookData || {};
+                                }
+
+                                function getRarityTable() {
+                                    const b = window.blacket;
+                                    if (!b) return {};
+                                    return b.rarities || {};
+                                }
+
+                                function getPackOrder() {
+                                    const b = window.blacket;
+                                    if (b) {
+                                        if (Array.isArray(b.packs) && b.packs.length > 0) {
+                                            const withOrder = b.packs.every((p) => p && (p.order != null || p.index != null));
+                                            const sorted = withOrder
+                                                ? b.packs.slice().sort((a, c) => (a.order ?? a.index) - (c.order ?? c.index))
+                                                : b.packs;
+                                            return sorted.map((p) => (p && p.name) || p);
+                                        }
+                                        if (b.packs && typeof b.packs === "object" && Object.keys(b.packs).length > 0) {
+                                            return Object.keys(b.packs);
+                                        }
+                                    }
+
+                                    const table = getBlookTable();
+                                    const order = [];
+                                    Object.values(table).forEach((meta) => {
+                                        const pack = meta.pack || meta.set || "Blooks";
+                                        if (!order.includes(pack)) order.push(pack);
+                                    });
+                                    return order;
+                                }
+
+                                function rarityIndex(rarityName) {
+                                    const table = getRarityTable();
+                                    const keys = Array.isArray(table) ? table.map((r) => r.name || r) : Object.keys(table);
+                                    const idx = keys.indexOf(rarityName);
+                                    return idx === -1 ? keys.length : idx;
+                                }
+
+                                function rarityColor(rarityName) {
+                                    const table = getRarityTable();
+                                    const entry = Array.isArray(table)
+                                        ? table.find((r) => (r.name || r) === rarityName)
+                                        : table[rarityName];
+                                    return (entry && (entry.color || entry.colour)) || "#888";
+                                }
+
+                                function fetchJson(url) {
+                                    return new Promise((resolve) => {
+                                        if (window.blacket && window.blacket.requests && window.blacket.requests.get) {
+                                            window.blacket.requests.get(url, resolve);
+                                        } else {
+                                            fetch(url).then((r) => r.json()).then(resolve).catch(() => resolve({ error: true }));
+                                        }
+                                    });
+                                }
+
+                                async function loadInventoryForUser(identifiers) {
+                                    for (const identifier of identifiers) {
+                                        if (!identifier) continue;
+                                        for (const template of CONFIG.userEndpoints) {
+                                            const url = template.replace("{identifier}", encodeURIComponent(identifier));
+                                            const data = await fetchJson(url);
+                                            if (!data || data.error) continue;
+
+                                            for (const path of CONFIG.inventoryPaths) {
+                                                const raw = getByPath(data, path);
+                                                const normalized = normalizeInventory(raw);
+                                                if (normalized.length > 0) return normalized;
+                                            }
+                                        }
+                                    }
+                                    return null;
+                                }
+
+                                function getPackBlookNames(packEntry) {
+                                    if (!packEntry) return [];
+                                    const list = packEntry.blooks || packEntry.blookList || packEntry.items || packEntry.list;
+                                    if (Array.isArray(list)) {
+                                        return list.map((item) => (typeof item === "string" ? item : (item && (item.name || item.id)))).filter(Boolean);
+                                    }
+                                    if (list && typeof list === "object") return Object.keys(list);
+                                    return [];
+                                }
+
+                                function getAllBlooksByPack() {
+                                    const table = getBlookTable();
+                                    const byPack = {};
+
+                                    const b = window.blacket;
+                                    if (b && b.packs) {
+                                        const packEntries = Array.isArray(b.packs)
+                                            ? b.packs.map((p, i) => [(p && p.name) || `Pack ${i}`, p])
+                                            : Object.entries(b.packs);
+
+                                        packEntries.forEach(([packName, packEntry]) => {
+                                            getPackBlookNames(packEntry).forEach((name) => {
+                                                if (!table[name]) return;
+                                                if (!byPack[packName]) byPack[packName] = [];
+                                                byPack[packName].push({ ...table[name], name });
+                                            });
+                                        });
+                                    }
+
+                                    if (Object.keys(byPack).length > 0) return byPack;
+
+                                    Object.entries(table).forEach(([name, meta]) => {
+                                        const pack = meta.pack || meta.set || "Blooks";
+                                        if (!byPack[pack]) byPack[pack] = [];
+                                        byPack[pack].push({ ...meta, name });
+                                    });
+                                    return byPack;
+                                }
+
+                                function buildBlookCard(meta, quantity) {
+                                    const owned = quantity > 0;
+                                    const showNames = BlacketTweaks.settings.getConfig(FEATURE_KEY, "showNames", false);
+                                    const card = document.createElement("div");
+                                    card.className = `bp-blookContainer${showNames ? " bp-blookContainerNamed" : ""}`;
+                                    card.dataset.bpName = (meta.name || "").toLowerCase();
+                                    card.title = meta.name || "";
+
+                                    const nameLabel = showNames ? `<div class="bp-blookName">${meta.name || ""}</div>` : "";
+                                    card.innerHTML = owned
+                                        ? `
+                                            <div class="bp-blookImgWrap">
+                                                <img loading="lazy" src="${meta.image}" draggable="false" class="bp-blook" />
+                                                <div class="bp-blookText" style="background-color: ${rarityColor(meta.rarity)};">x${quantity}</div>
+                                            </div>
+                                            ${nameLabel}
+                                        `
+                                        : `
+                                            <div class="bp-blookImgWrap">
+                                                <img loading="lazy" src="${meta.image}" draggable="false" class="bp-blook bp-lockedBlook" />
+                                                <i class="fas fa-lock bp-blookLock"></i>
+                                            </div>
+                                            ${nameLabel}
+                                        `;
+                                    return card;
+                                }
+
+                                function buildBlooksGrid(inventory) {
+                                    const table = getBlookTable();
+                                    const packOrder = getPackOrder();
+                                    const allByPack = getAllBlooksByPack();
+
+                                    const quantityByKey = new Map();
+                                    inventory.forEach(({ key, quantity }) => {
+                                        const meta = table[key] || Object.values(table).find((m) => m.name === key || m.id === key);
+                                        if (meta) quantityByKey.set(meta.name || key, quantity);
+                                    });
+
+                                    const packNames = Object.keys(allByPack);
+                                    if (packNames.length === 0) return null;
+
+                                    const sortedPackNames = packNames.sort((a, b) => {
+                                        const ai = packOrder.indexOf(a), bi = packOrder.indexOf(b);
+                                        if (ai === -1 && bi === -1) return a.localeCompare(b);
+                                        if (ai === -1) return 1;
+                                        if (bi === -1) return -1;
+                                        return ai - bi;
+                                    });
+
+                                    const wrapper = document.createElement("div");
+                                    wrapper.className = "bp-blooksHolder";
+
+                                    sortedPackNames.forEach((packName) => {
+                                        const blooksInPack = allByPack[packName];
+                                        const ownedCount = blooksInPack.filter((m) => quantityByKey.get(m.name) > 0).length;
+
+                                        const section = document.createElement("div");
+                                        section.className = "bp-setHolder";
+
+                                        section.innerHTML = `
+                                            <div class="bp-setTop">
+                                                <div class="bp-setText">${packName} <span class="bp-setCount">${ownedCount}/${blooksInPack.length}</span></div>
+                                            </div>
+                                            <div class="bp-setDivider"></div>
+                                        `;
+
+                                        const grid = document.createElement("div");
+                                        grid.className = "bp-setBlooks";
+
+                                        blooksInPack
+                                            .slice()
+                                            .sort((a, b) => rarityIndex(a.rarity || a.type) - rarityIndex(b.rarity || b.type) || (a.name || "").localeCompare(b.name || ""))
+                                            .forEach((meta) => grid.appendChild(buildBlookCard(meta, quantityByKey.get(meta.name) || 0)));
+
+                                        section.appendChild(grid);
+                                        wrapper.appendChild(section);
+                                    });
+
+                                    return wrapper;
+                                }
+
+                                function injectStyles() {
+                                    if (document.getElementById("bp-profile-blooks-style")) return;
+                                    const style = document.createElement("style");
+                                    style.id = "bp-profile-blooks-style";
+                                    style.textContent = `
+                                        .bp-blooksCard { margin-top: 0.521vw; }
+                                        .bp-blooksBody {
+                                            width: 100%;
+                                            box-sizing: border-box;
+                                            padding: 0.521vw 0.521vw 0.990vw;
+                                            display: flex;
+                                            flex-direction: column;
+                                            gap: 0.365vw;
+                                        }
+                                        .bp-blooksSearch {
+                                            border: none;
+                                            height: 2.083vw;
+                                            line-height: 2.083vw;
+                                            font-size: 1.146vw;
+                                            text-align: center;
+                                            font-weight: 700;
+                                            font-family: Quicksand, sans-serif;
+                                            color: #ffffff;
+                                            background-color: var(--secondary);
+                                            outline: none;
+                                            width: 100%;
+                                            box-sizing: border-box;
+                                            border-radius: 0.365vw;
+                                        }
+                                        .bp-blooksHolder {
+                                            width: 100%;
+                                            box-sizing: border-box;
+                                            max-height: 22vw;
+                                            padding: 0.260vw;
+                                            overflow-y: auto;
+                                        }
+                                        .bp-blooksHolder::-webkit-scrollbar {
+                                            width: 0.625vw;
+                                            background-color: hsla(0, 0%, 100%, 0.2);
+                                            border-radius: 0.521vw;
+                                        }
+                                        .bp-blooksHolder::-webkit-scrollbar-thumb,
+                                        .bp-blooksHolder::-webkit-scrollbar-thumb:hover {
+                                            background: #fff;
+                                            border-radius: 0.521vw;
+                                        }
+                                        .bp-setHolder.bp-setHidden { display: none; }
+                                        .bp-setHolder {
+                                            margin-bottom: 1.042vw;
+                                            position: relative;
+                                        }
+                                        .bp-setTop {
+                                            margin-bottom: 0.260vw;
+                                            position: relative;
+                                            height: 2.084vw;
+                                            width: 100%;
+                                            display: flex;
+                                            flex-direction: column;
+                                        }
+                                        .bp-setText {
+                                            margin: auto 0;
+                                            font-family: Puffet, sans-serif;
+                                            color: #fff;
+                                            text-shadow: 0.156vw 0.156vw rgba(0, 0, 0, 0.2);
+                                            font-size: 1.146vw;
+                                            position: relative;
+                                            display: flex;
+                                            align-items: baseline;
+                                            gap: 0.4vw;
+                                        }
+                                        .bp-setCount {
+                                            font-family: Quicksand, sans-serif;
+                                            font-size: 0.65vw;
+                                            opacity: 0.75;
+                                            text-shadow: none;
+                                        }
+                                        .bp-setDivider {
+                                            width: 100%;
+                                            height: 0.156vw;
+                                            background-color: #fff;
+                                            border-radius: 0.104vw;
+                                        }
+                                        .bp-setBlooks {
+                                            display: grid;
+                                            grid-template-columns: repeat(auto-fill, 3.125vw);
+                                            grid-gap: 0.521vw;
+                                        }
+                                        .bp-blookContainer.bp-blookHidden { display: none; }
+                                        .bp-blookContainer {
+                                            width: 3.125vw;
+                                            box-sizing: border-box;
+                                            display: flex;
+                                            flex-direction: column;
+                                            align-items: center;
+                                            cursor: pointer;
+                                            user-select: none;
+                                            outline: none;
+                                            transition: transform 0.1s ease;
+                                        }
+                                        .bp-blookContainer:hover { transform: scale(1.05); }
+                                        .bp-blookContainerNamed { padding-bottom: 0.3vw; }
+                                        .bp-blookImgWrap {
+                                            width: 3.125vw;
+                                            height: 3.646vw;
+                                            display: flex;
+                                            align-items: center;
+                                            justify-content: center;
+                                            position: relative;
+                                        }
+                                        .bp-blookName {
+                                            font-family: Quicksand, sans-serif;
+                                            font-size: 0.55vw;
+                                            color: #fff;
+                                            text-align: center;
+                                            margin-top: 0.15vw;
+                                            width: 3.4vw;
+                                            white-space: nowrap;
+                                            overflow: hidden;
+                                            text-overflow: ellipsis;
+                                        }
+                                        .bp-blook { width: 2.865vw; }
+                                        .bp-lockedBlook { filter: brightness(0); }
+                                        .bp-blookLock {
+                                            font-size: 1.250vw;
+                                            opacity: 0.7;
+                                            top: 55%;
+                                            left: 50%;
+                                            transform: translate(-50%, -50%);
+                                            color: #fff;
+                                            position: absolute;
+                                        }
+                                        .bp-blookText {
+                                            font-family: Puffet, sans-serif;
+                                            font-size: 0.7vw;
+                                            -webkit-text-stroke: #000 0.04vw;
+                                            color: #fff;
+                                            border-radius: 0.365vw;
+                                            padding: 0 0.260vw;
+                                            height: 0.729vw;
+                                            line-height: 0.729vw;
+                                            display: flex;
+                                            justify-content: center;
+                                            align-items: center;
+                                            position: absolute;
+                                            bottom: 0.104vw;
+                                            left: -0.104vw;
+                                        }
+                                        .bp-emptyMsg, .bp-loadingMsg, .bp-errorMsg {
+                                            width: 100%;
+                                            text-align: center;
+                                            opacity: 0.7;
+                                            color: #fff;
+                                            font-size: 0.75vw;
+                                            padding: 1vw 0;
+                                        }
+                                    `;
+                                    document.head.appendChild(style);
+                                }
+
+                                function getProfileIdentifiers() {
+                                    const nameParam = new URLSearchParams(location.search).get("name");
+                                    const usernameEl = document.querySelector(CONFIG.headerNameSelector);
+                                    const userIdEl = document.querySelector(CONFIG.userIdSelector);
+                                    const username = usernameEl ? usernameEl.textContent.trim() : null;
+                                    const userId = userIdEl ? userIdEl.textContent.trim() : null;
+                                    return [nameParam, username, userId].filter((id) => id && id !== "username" && id !== "userId");
+                                }
+
+                                function renderInventoryInto(blooksContainer, rawBlooks) {
+                                    const inventory = normalizeInventory(rawBlooks);
+                                    const grid = buildBlooksGrid(inventory);
+                                    blooksContainer.innerHTML = "";
+                                    if (!grid) {
+                                        blooksContainer.innerHTML = `<div class="bp-emptyMsg">This user doesn't own any blooks.</div>`;
+                                        return;
+                                    }
+                                    blooksContainer.appendChild(grid);
+                                }
+
+                                async function loadBlooksInto(blooksContainer) {
+                                    blooksContainer.innerHTML = `<div class="bp-loadingMsg">Loading blooks...</div>`;
+
+                                    const nameParam = new URLSearchParams(location.search).get("name");
+
+                                    if (!nameParam) {
+                                        const b = await BlacketTweaks.util.waitFor(() => window.blacket && window.blacket.user && window.blacket.user.blooks != null, { timeout: 8000 }).then(() => window.blacket).catch(() => null);
+                                        if (b) {
+                                            renderInventoryInto(blooksContainer, b.user.blooks);
+                                            return;
+                                        }
+                                    }
+
+                                    const viewedUser = BlacketTweaks.util.getViewedUser();
+                                    if (viewedUser && viewedUser.blooks != null) {
+                                        renderInventoryInto(blooksContainer, viewedUser.blooks);
+                                        return;
+                                    }
+
+                                    const identifiers = getProfileIdentifiers();
+                                    if (identifiers.length === 0) {
+                                        blooksContainer.innerHTML = `<div class="bp-errorMsg">Couldn't find this profile's username on the page.</div>`;
+                                        return;
+                                    }
+
+                                    try {
+                                        const inventory = await loadInventoryForUser(identifiers);
+                                        if (!inventory) {
+                                            blooksContainer.innerHTML = `<div class="bp-errorMsg">BlacketTweaks couldn't find a working endpoint for this user's blook inventory. See CONFIG.userEndpoints in BlacketTweaks.user.js.</div>`;
+                                            BlacketTweaks.warn("Profile Blooks: no working endpoint/field found. Tried:", CONFIG.userEndpoints, CONFIG.inventoryPaths, "identifiers:", identifiers);
+                                            return;
+                                        }
+                                        renderInventoryInto(blooksContainer, inventory);
+                                    } catch (e) {
+                                        BlacketTweaks.warn("Profile Blooks: failed to load", e);
+                                        blooksContainer.innerHTML = `<div class="bp-errorMsg">Something went wrong loading this user's blooks. Check the console for details.</div>`;
+                                    }
+                                }
+
+                                function filterBlooks(blooksContainer, query) {
+                                    const q = query.trim().toLowerCase();
+                                    blooksContainer.querySelectorAll(".bp-setHolder").forEach((section) => {
+                                        let anyVisible = false;
+                                        section.querySelectorAll(".bp-blookContainer").forEach((card) => {
+                                            const match = !q || (card.dataset.bpName || "").includes(q);
+                                            card.classList.toggle("bp-blookHidden", !match);
+                                            if (match) anyVisible = true;
+                                        });
+                                        section.classList.toggle("bp-setHidden", !anyVisible);
+                                    });
+                                }
+
+                                function setupForCard(friendsContainer) {
+                                    const friendsCard = friendsContainer.closest(CONFIG.friendsCardSelector);
+                                    if (!friendsCard || friendsCard.dataset.bpBlooksSetup) return;
+                                    friendsCard.dataset.bpBlooksSetup = "true";
+
+                                    injectStyles();
+
+                                    const blooksCard = document.createElement("div");
+                                    blooksCard.className = `${friendsCard.className} bp-blooksCard`;
+                                    blooksCard.innerHTML = `
+                                        <div class="${CONFIG.containerHeaderSelector.slice(1)}">
+                                            <div class="${CONFIG.containerHeaderInsideClass}">Blooks</div>
+                                        </div>
+                                        <div class="bp-blooksBody">
+                                            <input type="text" class="bp-blooksSearch" placeholder="Search" />
+                                            <div class="bp-blooksTabContent"></div>
+                                        </div>
+                                    `;
+                                    friendsCard.insertAdjacentElement("afterend", blooksCard);
+
+                                    const blooksContainer = blooksCard.querySelector(".bp-blooksTabContent");
+                                    const searchInput = blooksCard.querySelector(".bp-blooksSearch");
+                                    if (!BlacketTweaks.settings.getConfig(FEATURE_KEY, "showSearch", true)) {
+                                        searchInput.style.display = "none";
+                                    }
+                                    searchInput.addEventListener("input", () => filterBlooks(blooksContainer, searchInput.value));
+
+                                    let inView = false;
+                                    let lastSignature = null;
+                                    const currentSignature = () => {
+                                        const vu = BlacketTweaks.util.getViewedUser();
+                                        return vu ? `user:${vu.id}` : `url:${location.href}`;
+                                    };
+                                    const load = () => {
+                                        if (!inView) return;
+                                        const sig = currentSignature();
+                                        if (sig === lastSignature) return;
+                                        lastSignature = sig;
+                                        loadBlooksInto(blooksContainer).then(() => {
+                                            if (searchInput.value) filterBlooks(blooksContainer, searchInput.value);
+                                        });
+                                    };
+
+                                    if ("IntersectionObserver" in window) {
+                                        new IntersectionObserver((entries) => {
+                                            inView = entries.some((e) => e.isIntersecting);
+                                            if (inView) load();
+                                        }).observe(blooksCard);
+                                    } else {
+                                        inView = true;
+                                        load();
+                                    }
+
+                                    BlacketTweaks.util.onLocationChange(load);
+                                    BlacketTweaks.util.onViewedUserChange(load);
+                                }
+
+                                BlacketTweaks.util.onExists(CONFIG.friendsContainerSelector, setupForCard);
+                                BlacketTweaks.log("Profile Blooks feature loaded.");
+                            })();
+
+                            (function CopyUserIdFeature() {
+                                if (!BlacketTweaks.registerFeature("copyUserId", "Copy User ID", "Adds a Copy User ID button on profile pages.", "Stats", "fa-copy")) return;
+
+                                const CONFIG = {
+                                    viewStatsButtonSelector: "#viewStatsButton",
+                                    headerNameSelector: ".styles__headerName___1GBcl-camelCase"
+                                };
+
+                                function getViewedUsername() {
+
+                                    if (window.blacket && window.blacket.user && window.blacket.user.current) {
+                                        return window.blacket.user.current;
+                                    }
+                                    const nameParam = new URLSearchParams(location.search).get("name");
+                                    if (nameParam) return nameParam;
+                                    const usernameEl = document.querySelector(CONFIG.headerNameSelector);
+                                    const text = usernameEl ? usernameEl.textContent.trim() : "";
+                                    if (text && text !== "username") return text;
+                                    return (window.blacket && window.blacket.user) ? window.blacket.user.username : null;
+                                }
+
+                                function getViewedUserId() {
+                                    return new Promise((resolve) => {
+
+                                        if (!new URLSearchParams(location.search).get("name") && window.blacket && window.blacket.user && window.blacket.user.id != null) {
+                                            return resolve(String(window.blacket.user.id));
+                                        }
+
+                                        const viewedUser = BlacketTweaks.util.getViewedUser();
+                                        if (viewedUser && viewedUser.id != null) return resolve(String(viewedUser.id));
+
+                                        const username = getViewedUsername();
+                                        if (!username) return resolve(null);
+
+                                        if (window.blacket && window.blacket.user && username === window.blacket.user.username) {
+                                            return resolve(window.blacket.user.id != null ? String(window.blacket.user.id) : null);
+                                        }
+
+                                        if (!window.blacket || !window.blacket.requests) return resolve(null);
+                                        window.blacket.requests.get(`/worker2/user/${encodeURIComponent(username)}`, (data) => {
+                                            resolve(data && !data.error && data.user ? String(data.user.id) : null);
+                                        });
+                                    });
+                                }
+
+                                function copyToClipboard(text) {
+                                    if (navigator.clipboard && navigator.clipboard.writeText) {
+                                        return navigator.clipboard.writeText(text);
+                                    }
+                                    const textarea = document.createElement("textarea");
+                                    textarea.value = text;
+                                    textarea.style.position = "fixed";
+                                    textarea.style.opacity = "0";
+                                    document.body.appendChild(textarea);
+                                    textarea.select();
+                                    try { document.execCommand("copy"); } catch (e) {  }
+                                    textarea.remove();
+                                    return Promise.resolve();
+                                }
+
+                                function setup(viewStatsButton) {
+                                    if (viewStatsButton.dataset.bpCopyIdSetup) return;
+                                    viewStatsButton.dataset.bpCopyIdSetup = "true";
+
+                                    const button = document.createElement("a");
+                                    button.id = "bpCopyUserIdButton";
+                                    button.className = "styles__button___1_E-G-camelCase styles__headerButton___36TRh-camelCase";
+                                    button.setAttribute("role", "button");
+                                    button.setAttribute("tabindex", "0");
+                                    button.innerHTML = `
+                                        <div class="styles__shadow___3GMdH-camelCase"></div>
+                                        <div class="styles__edge___3eWfq-camelCase" style="background-color: #000;"></div>
+                                        <div class="styles__front___vcvuy-camelCase" style="background-color: #000;">
+                                            <div class="styles__headerButtonInside___26e_U-camelCase"><i class="styles__headerButtonIcon___1pOun-camelCase fas fa-copy" aria-hidden="true"></i>Copy User ID</div>
+                                        </div>
+                                    `;
+                                    viewStatsButton.insertAdjacentElement("afterend", button);
+
+                                    button.addEventListener("click", async () => {
+                                        const id = await getViewedUserId();
+                                        if (!id) {
+                                            if (window.blacket && window.blacket.createToast) {
+                                                window.blacket.createToast({ title: "Error", message: "Couldn't find this profile's user ID.", icon: "/content/blooks/Error.webp", time: 4000 });
+                                            }
+                                            return;
+                                        }
+                                        copyToClipboard(id).then(() => {
+                                            if (window.blacket && window.blacket.createToast) {
+                                                window.blacket.createToast({ title: "Copied", message: `User ID ${id} copied to clipboard.`, icon: "/content/blooks/Success.webp", time: 3000 });
+                                            } else {
+                                                const icon = button.querySelector(".styles__headerButtonIcon___1pOun-camelCase");
+                                                if (icon) {
+                                                    icon.classList.remove("fa-copy");
+                                                    icon.classList.add("fa-check");
+                                                    setTimeout(() => {
+                                                        icon.classList.remove("fa-check");
+                                                        icon.classList.add("fa-copy");
+                                                    }, 1500);
+                                                }
+                                            }
+                                        });
+                                    });
+                                }
+
+                                BlacketTweaks.util.onExists(CONFIG.viewStatsButtonSelector, setup);
+                                BlacketTweaks.log("Copy User ID feature loaded.");
+                            })();
+
+                            (function JoinDateStatFeature() {
+                                const FEATURE_KEY = "joinDateStat";
+                                const FORMATS = {
+                                    short: { label: "Jan 5, 2024", opts: { year: "numeric", month: "short", day: "numeric" } },
+                                    numeric: { label: "01/05/2024", opts: { year: "numeric", month: "2-digit", day: "2-digit" } },
+                                    long: { label: "January 5, 2024", opts: { year: "numeric", month: "long", day: "numeric" } }
+                                };
+
+                                if (!BlacketTweaks.registerFeature(FEATURE_KEY, "Join Date on Stats", "Shows a profile's account join date in the Stats card.", "Stats", "fa-calendar-alt", openConfigure)) return;
+
+                                const CONFIG = {
+
+                                    tokensSelector: "#tokens",
+                                    statContainerClass: "styles__statContainer___QKuOF-camelCase",
+                                    statTitleClass: "styles__statTitle___z4wSV-camelCase",
+                                    statNumClass: "styles__statNum___5RYSd-camelCase",
+                                    statImgClass: "styles__statImg___3DBXt-camelCase",
+                                    iconUrl: "https://ac.blooket.com/dashclassic/assets/TimeBeforeReset-CDNOz-Y-.svg"
+                                };
+
+                                function formatJoinDate(createdSeconds) {
+                                    if (createdSeconds == null) return null;
+                                    const key = BlacketTweaks.settings.getConfig(FEATURE_KEY, "dateFormat", "short");
+                                    const format = FORMATS[key] || FORMATS.short;
+                                    return new Date(createdSeconds * 1000).toLocaleDateString("en-US", format.opts);
+                                }
+
+                                async function getJoinDate() {
+                                    const nameParam = new URLSearchParams(location.search).get("name");
+
+                                    if (!nameParam) {
+                                        const b = await BlacketTweaks.util.waitFor(() => window.blacket && window.blacket.user && window.blacket.user.created != null, { timeout: 8000 }).then(() => window.blacket).catch(() => null);
+                                        if (b) return formatJoinDate(b.user.created);
+                                    }
+
+                                    const viewedUser = BlacketTweaks.util.getViewedUser();
+                                    if (viewedUser && viewedUser.created != null) return formatJoinDate(viewedUser.created);
+
+                                    const username = nameParam || (window.blacket && window.blacket.user && window.blacket.user.current);
+                                    if (!username || !window.blacket || !window.blacket.requests) return null;
+                                    return new Promise((resolve) => {
+                                        window.blacket.requests.get(`/worker2/user/${encodeURIComponent(username)}`, (data) => {
+                                            resolve(data && !data.error && data.user && data.user.created != null ? formatJoinDate(data.user.created) : null);
+                                        });
+                                    });
+                                }
+
+                                let refreshCallbacks = [];
+
+                                function openConfigure() {
+                                    const currentFormat = BlacketTweaks.settings.getConfig(FEATURE_KEY, "dateFormat", "short");
+                                    const optionsHtml = Object.entries(FORMATS).map(([key, f]) => `
+                                        <div id="bpJoinDateFormat-${key}" class="styles__button___1_E-G-camelCase styles__button___3zpwV-camelCase" style="margin: 0.365vw;" role="button" tabindex="0">
+                                            <div class="styles__shadow___3GMdH-camelCase"></div>
+                                            <div class="styles__edge___3eWfq-camelCase" style="background-color: ${key === currentFormat ? "var(--accent)" : "rgba(0,0,0,0.3)"};"></div>
+                                            <div class="styles__front___vcvuy-camelCase styles__buttonInside___39vdp-camelCase" style="background-color: ${key === currentFormat ? "var(--accent)" : "rgba(0,0,0,0.3)"};">${f.label}</div>
+                                        </div>
+                                    `).join("");
+
+                                    const modal = BlacketTweaks.util.openModal(`
+                                        <div class="styles__text___KSL4--camelCase"><div>Join Date Format</div></div>
+                                        <div class="styles__holder___3CEfN-camelCase">
+                                            <div style="display: flex; flex-direction: column; align-items: center;">${optionsHtml}</div>
+                                            <div class="styles__buttonContainer___2EaVD-camelCase">${BlacketTweaks.util.siteButtonHtml("bpJoinDateDone", "Done")}</div>
+                                        </div>
+                                    `);
+
+                                    Object.keys(FORMATS).forEach((key) => {
+                                        modal.querySelector(`#bpJoinDateFormat-${key}`).addEventListener("click", () => {
+                                            BlacketTweaks.settings.setConfig(FEATURE_KEY, "dateFormat", key);
+                                            modal.remove();
+                                            refreshCallbacks.forEach((cb) => cb());
+                                        });
+                                    });
+                                    modal.querySelector("#bpJoinDateDone").addEventListener("click", () => modal.remove());
+                                }
+
+                                function setup(tokensEl) {
+                                    const statsRow = tokensEl.closest(".styles__topStats___3qffP-camelCase");
+                                    if (!statsRow || statsRow.dataset.bpJoinDateSetup) return;
+                                    statsRow.dataset.bpJoinDateSetup = "true";
+
+                                    const tile = document.createElement("div");
+                                    tile.className = CONFIG.statContainerClass;
+                                    tile.setAttribute("currentitem", "false");
+                                    tile.innerHTML = `
+                                        <div class="${CONFIG.statTitleClass}">Join Date</div>
+                                        <div id="bpJoinDate" class="${CONFIG.statNumClass}">...</div>
+                                        <img loading="lazy" src="${CONFIG.iconUrl}" class="${CONFIG.statImgClass}" draggable="false">
+                                    `;
+                                    statsRow.appendChild(tile);
+
+                                    const valueEl = tile.querySelector("#bpJoinDate");
+                                    const refresh = () => {
+                                        valueEl.textContent = "...";
+                                        getJoinDate().then((formatted) => {
+                                            valueEl.textContent = formatted || "Unknown";
+                                        });
+                                    };
+                                    refresh();
+                                    refreshCallbacks.push(refresh);
+
+                                    BlacketTweaks.util.onViewedUserChange(refresh);
+                                    BlacketTweaks.util.onLocationChange(refresh);
+                                }
+
+                                BlacketTweaks.util.onExists(CONFIG.tokensSelector, setup);
+                                BlacketTweaks.log("Join Date on Stats feature loaded.");
+                            })();
+
+                            (function ExtraStatsFeature() {
+                                if (!BlacketTweaks.registerFeature("extraStats", "Extra Stats", "Adds User ID, Online Status, and Name Color tiles to the Stats card.", "Stats", "fa-list-ul")) return;
+
+                                const CONFIG = {
+                                    tokensSelector: "#tokens",
+                                    statContainerClass: "styles__statContainer___QKuOF-camelCase",
+                                    statTitleClass: "styles__statTitle___z4wSV-camelCase",
+                                    statNumClass: "styles__statNum___5RYSd-camelCase",
+                                    statImgClass: "styles__statImg___3DBXt-camelCase",
+                                    icons: {
+                                        userId: "https://ac.blooket.com/dashclassic/assets/GamesPlayed-ChTFMXFQ.svg",
+                                        online: "https://ac.blooket.com/dashclassic/assets/CorrectAnswers-BMzYvD5t.svg",
+                                        offline: "https://ac.blooket.com/dashclassic/assets/PlayersDefeated-CO8z_rNu.svg"
+                                    }
+                                };
+
+                                async function resolveViewedUser() {
+                                    const nameParam = new URLSearchParams(location.search).get("name");
+
+                                    if (!nameParam) {
+                                        const b = await BlacketTweaks.util.waitFor(() => window.blacket && window.blacket.user && window.blacket.user.id != null, { timeout: 8000 }).then(() => window.blacket).catch(() => null);
+                                        if (b) return b.user;
+                                    }
+
+                                    const viewedUser = BlacketTweaks.util.getViewedUser();
+                                    if (viewedUser) return viewedUser;
+
+                                    const username = nameParam || (window.blacket && window.blacket.user && window.blacket.user.current);
+                                    if (!username || !window.blacket || !window.blacket.requests) return null;
+                                    return new Promise((resolve) => {
+                                        window.blacket.requests.get(`/worker2/user/${encodeURIComponent(username)}`, (data) => {
+                                            resolve(data && !data.error ? data.user : null);
+                                        });
+                                    });
+                                }
+
+                                function buildTile(id, title, withIcon = true) {
+                                    return `
+                                        <div class="${CONFIG.statContainerClass}" currentitem="false">
+                                            <div class="${CONFIG.statTitleClass}">${title}</div>
+                                            <div id="${id}" class="${CONFIG.statNumClass}">...</div>
+                                            ${withIcon ? `<img loading="lazy" id="${id}Icon" class="${CONFIG.statImgClass}" draggable="false">` : ""}
+                                        </div>
+                                    `;
+                                }
+
+                                function setup(tokensEl) {
+                                    const statsRow = tokensEl.closest(".styles__topStats___3qffP-camelCase");
+                                    if (!statsRow || statsRow.dataset.bpExtraStatsSetup) return;
+                                    statsRow.dataset.bpExtraStatsSetup = "true";
+
+                                    statsRow.insertAdjacentHTML("beforeend", `
+                                        ${buildTile("bpUserId", "User ID")}
+                                        ${buildTile("bpOnlineStatus", "Status")}
+                                        ${buildTile("bpNameColor", "Name Color", false)}
+                                    `);
+
+                                    document.querySelector("#bpUserIdIcon").src = CONFIG.icons.userId;
+
+                                    const refresh = () => {
+                                        resolveViewedUser().then((user) => {
+                                            if (!user) return;
+
+                                            document.querySelector("#bpUserId").textContent = user.id != null ? String(user.id) : "Unknown";
+
+                                            const online = user.modified != null && (user.modified * 1000 > Date.now() - 60000);
+                                            const statusEl = document.querySelector("#bpOnlineStatus");
+                                            statusEl.textContent = online ? "Online" : "Offline";
+                                            statusEl.style.color = online ? "lightgreen" : "#ff5c5c";
+                                            document.querySelector("#bpOnlineStatusIcon").src = online ? CONFIG.icons.online : CONFIG.icons.offline;
+
+                                            const colorEl = document.querySelector("#bpNameColor");
+                                            const rawColor = (user.color || "").split(";")[0];
+                                            colorEl.textContent = rawColor || "N/A";
+                                            if (rawColor) colorEl.style.color = rawColor;
+                                        });
+                                    };
+                                    refresh();
+
+                                    BlacketTweaks.util.onViewedUserChange(refresh);
+                                    BlacketTweaks.util.onLocationChange(refresh);
+                                }
+
+                                BlacketTweaks.util.onExists(CONFIG.tokensSelector, setup);
+                                BlacketTweaks.log("Extra Stats feature loaded.");
+                            })();
+
+                            (function DoubleLeaderboardFeature() {
+                                if (!BlacketTweaks.registerFeature("doubleLeaderboard", "Double Leaderboard", "Shows the Tokens and EXP leaderboards side by side — no need to switch.", "Leaderboard", "fa-trophy")) return;
+
+                                const CONFIG = {
+                                    headerRightSelector: ".styles__containerHeaderRight___3xghM-camelCase",
+                                    topStatsClass: "styles__topStats___3qffP-camelCase",
+                                    cardSelector: ".styles__statsContainer___QnrRB-camelCase"
+                                };
+
+                                function injectStyles() {
+                                    if (document.getElementById("bp-double-lb-style")) return;
+                                    const style = document.createElement("style");
+                                    style.id = "bp-double-lb-style";
+                                    style.textContent = `
+                                        .bp-lbBoard {
+                                            box-sizing: border-box;
+                                            float: left;
+                                            width: 50%;
+                                        }
+                                        .bp-lbBoard:first-of-type { padding-right: 0.5vw; }
+                                        .bp-lbBoard:last-of-type { padding-left: 0.5vw; }
+                                        .bp-lbBoard::before {
+                                            display: block;
+                                            text-align: center;
+                                            font-family: Quicksand, sans-serif;
+                                            font-weight: 700;
+                                            color: #fff;
+                                            opacity: 0.75;
+                                            font-size: 0.95vw;
+                                            margin-bottom: 0.3vw;
+                                        }
+                                        .bp-lbBoardTokens::before { content: "Tokens"; }
+                                        .bp-lbBoardExp::before { content: "EXP"; }
+                                        .bp-lbClear { clear: both; }
+                                    `;
+                                    document.head.appendChild(style);
+                                }
+
+                                function setup(headerRight) {
+                                    const card = headerRight.closest(CONFIG.cardSelector);
+                                    if (!card || card.dataset.bpDoubleLbSetup) return;
+
+                                    const boardWrappers = Array.from(card.children).filter((el) =>
+                                        el.tagName === "DIV" &&
+                                        !el.classList.contains("styles__containerHeader___3xghM-camelCase") &&
+                                        !el.classList.contains("styles__containerHeaderRight___3xghM-camelCase") &&
+                                        el.querySelector(`.${CONFIG.topStatsClass}`)
+                                    );
+                                    if (boardWrappers.length < 2) return;
+                                    card.dataset.bpDoubleLbSetup = "true";
+
+                                    injectStyles();
+
+                                    headerRight.style.display = "none";
+
+                                    boardWrappers[0].classList.add("bp-lbBoard", "bp-lbBoardTokens");
+                                    boardWrappers[0].style.display = "block";
+                                    boardWrappers[1].classList.add("bp-lbBoard", "bp-lbBoardExp");
+                                    boardWrappers[1].style.display = "block";
+
+                                    const clear = document.createElement("div");
+                                    clear.className = "bp-lbClear";
+                                    card.appendChild(clear);
+                                }
+
+                                BlacketTweaks.util.onExists(CONFIG.headerRightSelector, setup);
+                                BlacketTweaks.log("Double Leaderboard feature loaded.");
+                            })();
+
+                            (function BlacketTweaksSettingsFeature() {
+                                const CONFIG = {
+                                    gridSelector: ".styles__mainContainer___4TLvi-camelCase"
+                                };
+
+                                function isSettingsUrl() {
+                                    return location.pathname.replace(/\/+$/, "") === "/settings";
+                                }
+
+                                function injectStyles() {
+                                    if (document.getElementById("bp-tweaks-style")) return;
+                                    const style = document.createElement("style");
+                                    style.id = "bp-tweaks-style";
+                                    style.textContent = `
+                                        .bp-tweaksList {
+                                            display: flex;
+                                            flex-direction: column;
+                                            gap: 0.35vw;
+                                            margin-top: 0.5vw;
+                                        }
+                                        .bp-tweakRow {
+                                            display: flex;
+                                            align-items: center;
+                                            gap: 0.5vw;
+                                        }
+                                        .bp-tweakInfo { flex: 1; min-width: 0; }
+                                        .bp-tweakLabel {
+                                            font-size: 0.85vw;
+                                            font-family: Quicksand, sans-serif;
+                                            font-weight: 700;
+                                            color: #ffffff;
+                                            white-space: nowrap;
+                                            overflow: hidden;
+                                            text-overflow: ellipsis;
+                                        }
+                                        .bp-tweakDesc {
+                                            font-size: 0.7vw;
+                                            font-family: Quicksand, sans-serif;
+                                            opacity: 0.55;
+                                            color: #ffffff;
+                                        }
+                                        .bp-tweakConfigIcon {
+                                            font-size: 0.85vw;
+                                            color: rgba(255,255,255,0.55);
+                                            cursor: pointer;
+                                            flex-shrink: 0;
+                                            transition: color 0.15s ease;
+                                        }
+                                        .bp-tweakConfigIcon:hover { color: #ffffff; }
+                                        .bp-tweakSwitch {
+                                            width: 2.1vw;
+                                            height: 0.95vw;
+                                            border-radius: 0.5vw;
+                                            background-color: rgba(0, 0, 0, 0.3);
+                                            position: relative;
+                                            outline: none;
+                                            user-select: none;
+                                            cursor: pointer;
+                                            flex-shrink: 0;
+                                        }
+                                        .bp-tweakSwitchSquare {
+                                            height: 0.75vw;
+                                            width: 0.75vw;
+                                            background-color: #fff;
+                                            border-radius: 50%;
+                                            position: absolute;
+                                            top: 50%;
+                                            left: 0.1vw;
+                                            transform: translateY(-50%);
+                                            transition: 0.2s;
+                                        }
+                                        .bp-tweakSwitch.bp-tweakSwitchOn .bp-tweakSwitchSquare { left: calc(100% - 0.85vw); }
+                                    `;
+                                    document.head.appendChild(style);
+                                }
+
+                                function buildToggleRow(key, feature) {
+                                    const row = document.createElement("div");
+                                    row.className = "bp-tweakRow";
+
+                                    const enabled = BlacketTweaks.settings.isEnabled(key);
+                                    const configIcon = feature.onConfigure
+                                        ? `<i class="fas fa-cog bp-tweakConfigIcon" title="Configure" aria-hidden="true"></i>`
+                                        : "";
+
+                                    row.innerHTML = `
+                                        <div class="bp-tweakLabel">${feature.label}</div>
+                                        ${configIcon}
+                                        <div class="bp-tweakSwitch${enabled ? " bp-tweakSwitchOn bp-rainbow" : ""}" role="button" tabindex="0">
+                                            <div class="bp-tweakSwitchSquare"></div>
+                                        </div>
+                                    `;
+
+                                    if (feature.onConfigure) {
+                                        row.querySelector(".bp-tweakConfigIcon").addEventListener("click", () => feature.onConfigure());
+                                    }
+
+                                    const switchEl = row.querySelector(".bp-tweakSwitch");
+                                    switchEl.addEventListener("click", () => {
+                                        const nowEnabled = !switchEl.classList.contains("bp-tweakSwitchOn");
+                                        switchEl.classList.toggle("bp-tweakSwitchOn", nowEnabled);
+                                        switchEl.classList.toggle("bp-rainbow", nowEnabled);
+                                        BlacketTweaks.settings.setEnabled(key, nowEnabled);
+                                    });
+
+                                    return row;
+                                }
+
+                                function buildSettingsCard() {
+                                    const card = document.createElement("div");
+                                    card.id = "bpTweaksCard";
+                                    card.className = "styles__infoContainer___2uI-S-camelCase";
+                                    card.innerHTML = `
+                                        <div class="styles__headerRow___1tdPa-camelCase">
+                                            <i class="styles__headerIcon___1ykdN-camelCase fas fa-sliders-h" aria-hidden="true"></i>
+                                            <div class="styles__infoHeader___1lsZY-camelCase">BlacketTweaks</div>
+                                        </div>
+                                        <div class="bp-tweaksList"></div>
+                                    `;
+                                    const list = card.querySelector(".bp-tweaksList");
+                                    Object.entries(BlacketTweaks.features)
+                                        .sort(([, a], [, b]) => a.label.localeCompare(b.label))
+                                        .forEach(([key, feature]) => list.appendChild(buildToggleRow(key, feature)));
+                                    return card;
+                                }
+
+                                function render() {
+                                    if (!isSettingsUrl()) return;
+                                    const grid = document.querySelector(CONFIG.gridSelector);
+                                    if (!grid) return;
+
+                                    injectStyles();
+
+                                    if (!grid.querySelector("#bpTweaksCard")) {
+                                        grid.appendChild(buildSettingsCard());
+                                    }
+                                }
+
+                                BlacketTweaks.util.onExists(CONFIG.gridSelector, render);
+                                BlacketTweaks.util.onLocationChange(render);
+                                BlacketTweaks.log("BlacketTweaks Settings feature loaded.");
+                            })();
+                        })();
